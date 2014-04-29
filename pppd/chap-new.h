@@ -117,6 +117,12 @@ extern int (*chap_verify_hook)(char *name, char *ourname, int id,
 			unsigned char *challenge, unsigned char *response,
 			char *message, int message_space);
 
+/* Hook for a plugin to generate challenge */
+extern void (*chap_generate_challenge_hook)(int* id, unsigned char *challenge);
+
+/* Hook for a plugin to respond to a challenge */
+extern void (*chap_respond_hook)(int id, const unsigned char* challenge, char *name, unsigned char *secret);
+
 /* Called by digest code to register a digest type */
 extern void chap_register_digest(struct chap_digest_type *);
 

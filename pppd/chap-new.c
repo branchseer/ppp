@@ -52,6 +52,13 @@ int (*chap_verify_hook)(char *name, char *ourname, int id,
 			unsigned char *challenge, unsigned char *response,
 			char *message, int message_space) = NULL;
 
+/* Hook for a plugin to generate challenge */
+void (*chap_generate_challenge_hook)(int* id, unsigned char *challenge) = NULL;
+
+/* Hook for a plugin to respond to a challenge */
+void (*chap_respond_hook)(int id, const unsigned char* challenge, char *name, unsigned char *secret) = NULL;
+
+
 /*
  * Option variables.
  */
@@ -278,13 +285,22 @@ chap_timeout(void *arg)
 static void
 chap_generate_challenge(struct chap_server_state *ss)
 {
-	int clen = 1, nlen, len;
+	int clen = 1, nlen, len, id = 0;
 	unsigned char *p;
 
 	p = ss->challenge;
 	MAKEHEADER(p, PPP_CHAP);
 	p += CHAP_HDRLEN;
-	ss->digest->generate_challenge(p);
+
+	*p = 0;
+ 	if (chap_generate_challenge_hook) {
+		(*chap_generate_challenge_hook)(&id, p);
+	}
+
+	if (*p == 0) {
+		ss->digest->generate_challenge(p);
+	}
+
 	clen = *p;
 	nlen = strlen(ss->name);
 	memcpy(p + 1 + clen, ss->name, nlen);
@@ -294,7 +310,7 @@ chap_generate_challenge(struct chap_server_state *ss)
 
 	p = ss->challenge + PPP_HDRLEN;
 	p[0] = CHAP_CHALLENGE;
-	p[1] = ++ss->id;
+	p[1] = id ? id : (++ss->id);;
 	p[2] = len >> 8;
 	p[3] = len;
 }
@@ -441,6 +457,9 @@ chap_respond(struct chap_client_state *cs, int id,
 	unsigned char response[RESP_MAX_PKTLEN];
 	char rname[MAXNAMELEN+1];
 	char secret[MAXSECRETLEN+1];
+	char hooked_name[MAXNAMELEN+1];
+	char hooked_secret[MAXSECRETLEN+1];
+
 
 	if ((cs->flags & (LOWERUP | AUTH_STARTED)) != (LOWERUP | AUTH_STARTED))
 		return;		/* not ready */
@@ -456,23 +475,37 @@ chap_respond(struct chap_client_state *cs, int id,
 	if (explicit_remote || (remote_name[0] != 0 && rname[0] == 0))
 		strlcpy(rname, remote_name, sizeof(rname));
 
-	/* get secret for authenticating ourselves with the specified host */
-	if (!get_secret(0, cs->name, rname, secret, &secret_len, 0)) {
-		secret_len = 0;	/* assume null secret if can't find one */
-		warn("No CHAP secret found for authenticating us to %q", rname);
-	}
 
 	p = response;
 	MAKEHEADER(p, PPP_CHAP);
 	p += CHAP_HDRLEN;
 
-	cs->digest->make_response(p, id, cs->name, pkt,
-				  secret, secret_len, cs->priv);
-	memset(secret, 0, secret_len);
 
-	clen = *p;
-	nlen = strlen(cs->name);
-	memcpy(p + clen + 1, cs->name, nlen);
+	if (chap_respond_hook) {
+		chap_respond_hook(id, pkt, hooked_name, hooked_secret);
+
+		clen = hooked_secret[0];
+		memcpy(p, hooked_secret, clen + 1);
+
+		nlen = strlen(hooked_name);
+		memcpy(p + clen + 1, hooked_name, nlen);
+	}
+	else {
+		/* get secret for authenticating ourselves with the specified host */
+		if (!get_secret(0, cs->name, rname, secret, &secret_len, 0)) {
+			secret_len = 0;	/* assume null secret if can't find one */
+			warn("No CHAP secret found for authenticating us to %q", rname);
+		}
+
+
+		cs->digest->make_response(p, id, cs->name, pkt,
+					  secret, secret_len, cs->priv);
+		memset(secret, 0, secret_len);
+
+		clen = *p;
+		nlen = strlen(cs->name);
+		memcpy(p + clen + 1, cs->name, nlen);
+	}
 
 	p = response + PPP_HDRLEN;
 	len = CHAP_HDRLEN + clen + 1 + nlen;
